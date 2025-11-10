@@ -46,14 +46,6 @@ A RAG Agentic system built with the new Gemini 2.0 Flash Thinking model and gemi
    - Qdrant URL: Your cluster URL (format: `https://xxx-xxx.cloud.qdrant.io`)
 
 
-
-   AIzaSyCFfEXM6sRenkIfpmz3LZ0STYbiJno8B34
-
-   <!-- qdrant_client = QdrantClient(
-    url="https://0b365b04-9f10-484f-879a-05fa61714a07.us-east-1-1.aws.cloud.qdrant.io:6333", 
-    api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.5urZ6CrxvGfLi3gL4RlUKSl4ygw4ozj9x7iF-nNpBrY",
-) -->
-
 ### 3. Exa AI API Key (Optional)
 1. Visit [Exa AI](https://exa.ai)
 2. Sign up for an account
