@@ -1,11 +1,30 @@
+# --- Core app & UI ---
+streamlit
+
+# --- Agent framework & LLMs ---
 agno
-exa==0.5.26
-qdrant-client==1.12.1
-langchain-qdrant==0.2.0
-langchain-community==0.3.13
-streamlit==1.41.1
-google-generativeai
-beautifulsoup4
-google-genai
+openai           # used under the hood by agno OpenAIChat
+
+# --- RAG / LangChain ecosystem ---
+langchain
+langchain-community
+langchain-qdrant
+langchain-text-splitters
+langchain-huggingface 
+
+# --- Embeddings & vector stores ---
+sentence-transformers
+qdrant-client
+faiss-cpu        # if this fails on Windows, you can comment it out
+
+# --- PDF, web loaders, HTML parsing ---
+pypdf            # used by PyPDFLoader
+beautifulsoup4   # bs4
+
+# --- Web search / Exa tools ---
+exa
 exa_py
-pypdf
+
+# --- Gemini (for your Gemini-based script) ---
+google-generativeai
+google-genai

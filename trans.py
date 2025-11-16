@@ -8,41 +8,108 @@ import bs4
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from langchain_core.embeddings import Embeddings
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from agno.tools.exa import ExaTools
 from langchain_community.vectorstores import FAISS
 
 
-class LocalEmbedder(Embeddings):
-    """Local embeddings via Sentence-Transformers (no API needed)."""
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-        self.model_name = model_name
-        self._emb = HuggingFaceEmbeddings(
-        model_name=self.model_name,
-        model_kwargs={"device": "cpu"},           # Load model on CPU safely
-        encode_kwargs={"normalize_embeddings": True}
+# ---------- Streamlit UI: prettier header + styled sidebar ----------
+st.set_page_config(
+    page_title="Agentic RAG — OpenRouter + Agno",
+    page_icon="🧭",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        return self._emb.embed_documents(texts)
+# Simple custom CSS for nicer look
+CUSTOM_CSS = """
+<style>
+:root {
+    --sb-dark: #845BB3;      /* seaborn primary blue */
+    --sb-accent: #DD8452;    /* seaborn orange */
+    --sb-teal: #55A868;      /* seaborn green/teal */
+    --sb-grey: #D0BDF4;
+    --text-light: #D0BDF4;
+    --panel: #D0BDF4;
+}
 
-    def embed_query(self, text: str) -> List[float]:
-        return self._emb.embed_query(text)
+/* Main background */
+.stApp {
+    background-color: #494D5F;
+}
 
+/* Sidebar background */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, var(--sb-dark), #2E4A7B);
+    color: var(--text-light);
+}
+
+/* Sidebar text */
+section[data-testid="stSidebar"] * {
+    color: var(--text-light) !important;
+}
+
+/* Cards */
+.card {
+    background: var(--panel);
+    border-left: 5px solid var(--sb-dark);
+    border-radius: 10px;
+    padding: 14px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    margin-bottom: 12px;
+}
+
+/* Header */
+.h1 {
+    font-size: 30px;
+    font-weight: 800;
+    color: var(--sb-dark);
+}
+.h2 {
+    font-size: 15px;
+    color: #D0BDF4;
+}
+.small-muted {
+    color: #D0BDF4;
+    font-size: 13px;
+}
+
+/* Buttons */
+.stButton>button {
+    background-color: var(--sb-dark);
+    color: var(--text-light);
+    border-radius: 8px;
+    border: none;
+}
+.stButton>button:hover {
+    background-color: var(--sb-accent);
+    color: white;
+}
+
+/* File uploader */
+.css-1cpxqw2, .stTextArea textarea, .stTextInput input {
+    border-radius: 8px !important;
+}
+
+/* Metrics */
+[data-testid="stMetricValue"] {
+    color: var(--sb-teal) !important;
+}
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+# -------------------------------------------------------------------
 
 # Constants
 COLLECTION_NAME = "agentic-rag-openrouter"
 
-
-# Streamlit App Initialization
-st.title("🧭 Agentic RAG with OpenRouter and Agno")
-
-# Session State Initialization
+# Session State Initialization (ensure defaults before UI reads them)
 if "openrouter_api_key" not in st.session_state:
     st.session_state.openrouter_api_key = ""
 if "qdrant_api_key" not in st.session_state:
@@ -68,78 +135,105 @@ if "chat_model" not in st.session_state:
 if "embed_model" not in st.session_state:
     st.session_state.embed_model = "sentence-transformers/all-MiniLM-L6-v2"
 
+# Header area with logo, title and description
+logo_url = None  # Replace with your logo url or keep None
+with st.container():
+    left, mid, right = st.columns([1, 6, 2])
+    with left:
+        if logo_url:
+            st.image(logo_url, width=72)
+        else:
+            st.markdown("<div style='font-size:42px'>🧭</div>", unsafe_allow_html=True)
+    with mid:
+        st.markdown("<div class='h1'>Agentic RAG — OpenRouter & Agno</div>", unsafe_allow_html=True)
+        st.markdown("<div class='h2'>Retrieval-Augmented Generation with autonomous agents, semantic search, and LLM reasoning.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small-muted'>Upload PDFs or URLs, tune similarity, and interact with the knowledge base.</div>", unsafe_allow_html=True)
+    with right:
+        st.metric(label="Docs indexed", value=len(st.session_state.processed_documents))
+        st.markdown("")
 
-# Sidebar Configuration
-st.sidebar.header("🔑 API Configuration")
-openrouter_api_key = st.sidebar.text_input(
-    "OpenRouter API Key", type="password", value=st.session_state.openrouter_api_key
-)
-qdrant_api_key = st.sidebar.text_input(
-    "Qdrant API Key", type="password", value=st.session_state.qdrant_api_key
-)
-qdrant_url = st.sidebar.text_input(
-    "Qdrant URL",
-    placeholder="https://your-cluster.cloud.qdrant.io:6333",
-    value=st.session_state.qdrant_url,
-)
+st.markdown("---")
 
-# Model choices
-st.sidebar.header("🧠 Model Settings")
+# Nice stats row / quick controls
+with st.container():
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown("<div class='card'><strong>Vector Store</strong><div class='small-muted'>Active: {}</div></div>".format("Qdrant" if st.session_state.qdrant_url else "FAISS (local)"), unsafe_allow_html=True)
+    with c2:
+        st.markdown("<div class='card'><strong>Embedding model</strong><div class='small-muted'>{}</div></div>".format(st.session_state.embed_model), unsafe_allow_html=True)
+    with c3:
+        st.markdown("<div class='card'><strong>LLM</strong><div class='small-muted'>{}</div></div>".format(st.session_state.chat_model), unsafe_allow_html=True)
+    with c4:
+        st.markdown("<div class='card'><strong>Similarity</strong><div class='small-muted'>{:.2f}</div></div>".format(st.session_state.similarity_threshold), unsafe_allow_html=True)
+
+# Sidebar: group into visually separated cards (all widgets have unique keys)
+st.sidebar.markdown("<div class='card'><strong>🔑 API Configuration</strong></div>", unsafe_allow_html=True)
+openrouter_api_key = st.sidebar.text_input("OpenRouter API Key", type="password", value=st.session_state.openrouter_api_key, placeholder="sk-...", key="openrouter_api_key_input")
+qdrant_api_key = st.sidebar.text_input("Qdrant API Key", type="password", value=st.session_state.qdrant_api_key, placeholder="qdrant_key...", key="qdrant_api_key_input")
+qdrant_url = st.sidebar.text_input("Qdrant URL", value=st.session_state.qdrant_url, placeholder="https://xxx-xxx.cloud.qdrant.io:6333", key="qdrant_url_input")
+
+st.sidebar.markdown("<div class='card'><strong>🧠 Model Settings</strong></div>", unsafe_allow_html=True)
 st.session_state.chat_model = st.sidebar.text_input(
     "Chat model (OpenRouter id)", value=st.session_state.chat_model,
-    help="e.g., openrouter/polaris-alpha, qwen/qwen-2.5-72b-instruct, deepseek/deepseek-r1"
+    help="e.g., openrouter/polaris-alpha", key="chat_model_input"
 )
 st.session_state.embed_model = st.sidebar.text_input(
     "Embedding model (local)", value=st.session_state.embed_model,
-    help="HuggingFace sentence-transformers model; default is all-MiniLM-L6-v2 (384 dims)"
+    help="HuggingFace sentence-transformers model; default is all-MiniLM-L6-v2", key="embed_model_input"
 )
 
-# Clear Chat Button
-if st.sidebar.button("🗑️ Clear Chat History"):
+st.sidebar.markdown("<div class='card'><strong>🌐 Web Search</strong></div>", unsafe_allow_html=True)
+st.session_state.use_web_search = st.sidebar.checkbox("Enable Web Search Fallback", value=st.session_state.use_web_search, key="web_search_checkbox")
+if st.session_state.use_web_search:
+    exa_api_key = st.sidebar.text_input("Exa AI API Key", type="password", value=st.session_state.exa_api_key, key="exa_api_key_input")
+
+st.sidebar.markdown("<div class='card'><strong>🎯 Search Configuration</strong></div>", unsafe_allow_html=True)
+st.session_state.similarity_threshold = st.sidebar.slider(
+    "Document Similarity Threshold", min_value=0.0, max_value=1.0, value=st.session_state.similarity_threshold, key="similarity_slider"
+)
+
+# Clear Chat Button (single unique key to avoid duplicates)
+if st.sidebar.button("🗑️ Clear Chat History", key="clear_chat_btn"):
     st.session_state.history = []
     st.rerun()
 
-# Update session state
+# Update session state (persist changes)
 st.session_state.openrouter_api_key = openrouter_api_key
 st.session_state.qdrant_api_key = qdrant_api_key
 st.session_state.qdrant_url = qdrant_url
 
-# Web search config
-st.sidebar.header("🌐 Web Search Configuration")
-st.session_state.use_web_search = st.sidebar.checkbox(
-    "Enable Web Search Fallback", value=st.session_state.use_web_search
-)
+# Friendly upload card in main area (replaces basic file_uploader placement)
+st.markdown("<div class='card'><strong>📁 Upload & Index</strong></div>", unsafe_allow_html=True)
+upload_col1, upload_col2 = st.columns([3, 1])
+with upload_col1:
+    uploaded_file = st.file_uploader("Upload PDF to index (or drag & drop)", type=["pdf"], key="file_uploader")
+    web_url = st.text_input("Or enter a URL to index", placeholder="https://example.com/article", key="web_url_input")
+with upload_col2:
+    st.markdown("<div style='padding-top:16px;'>Use this to add docs to your knowledge base.<br>Processed files show in the sidebar.</div>", unsafe_allow_html=True)
 
-if st.session_state.use_web_search:
-    exa_api_key = st.sidebar.text_input(
-        "Exa AI API Key",
-        type="password",
-        value=st.session_state.exa_api_key,
-        help="Required for web search fallback when no relevant documents are found",
-    )
-    st.session_state.exa_api_key = exa_api_key
-
-    # Optional domain filtering
-    default_domains = ["arxiv.org", "wikipedia.org", "github.com", "medium.com"]
-    custom_domains = st.sidebar.text_input(
-        "Custom domains (comma-separated)",
-        value=",".join(default_domains),
-        help="Enter domains to search from, e.g.: arxiv.org,wikipedia.org",
-    )
-    search_domains = [d.strip() for d in custom_domains.split(",") if d.strip()]
-
-# Search threshold
-st.sidebar.header("🎯 Search Configuration")
-st.session_state.similarity_threshold = st.sidebar.slider(
-    "Document Similarity Threshold",
-    min_value=0.0,
-    max_value=1.0,
-    value=0.7,
-    help="Lower values will return more documents but might be less relevant. Higher values are more strict.",
-)
+st.markdown("---")
+# ---------------- end UI snippet ----------------
 
 
-# Utility Functions
+# ---------------- Embeddings / Vector helpers ----------------
+class LocalEmbedder(Embeddings):
+    """Local embeddings via Sentence-Transformers (no API needed)."""
+    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+        self.model_name = model_name
+        # Force CPU & safe kwargs to avoid meta/GPU issues
+        self._emb = HuggingFaceEmbeddings(
+            model_name=self.model_name,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return self._emb.embed_documents(texts)
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._emb.embed_query(text)
+
+
 def init_qdrant():
     """Initialize Qdrant client with configured settings."""
     if not all([st.session_state.qdrant_api_key, st.session_state.qdrant_url]):
@@ -257,8 +351,22 @@ def create_vector_store(client, texts, embedding: Embeddings):
         return None
 
 
-# Agents
+# FAISS fallback helper (create or upsert)
+def upsert_docs(texts, embedding, qdrant_client):
+    if not texts:
+        return
+    if st.session_state.vector_store is None:
+        if qdrant_client:
+            st.session_state.vector_store = create_vector_store(qdrant_client, texts, embedding)
+        else:
+            st.session_state.vector_store = FAISS.from_documents(texts, embedding)
+            st.success("✅ Created local FAISS index (no Qdrant configured)")
+    else:
+        st.session_state.vector_store.add_documents(texts)
+        st.success("✅ Added documents to active vector store")
 
+
+# Agents
 def get_query_rewriter_agent() -> Agent:
     return Agent(
         name="Query Rewriter",
@@ -273,13 +381,15 @@ def get_query_rewriter_agent() -> Agent:
 
 
 def get_web_search_agent() -> Agent:
+    # search_domains might be defined in sidebar block; fall back safely
+    include_domains = locals().get("search_domains", None)
     return Agent(
         name="Web Search Agent",
         model=OpenAIChat(id=st.session_state.chat_model),
         tools=[
             ExaTools(
                 api_key=st.session_state.exa_api_key,
-                include_domains=search_domains,
+                include_domains=include_domains,
                 num_results=5,
             )
         ],
@@ -311,11 +421,6 @@ if st.session_state.openrouter_api_key:
 
     qdrant_client = init_qdrant()
 
-    # File/URL Upload Section
-    st.sidebar.header("📁 Data Upload")
-    uploaded_file = st.sidebar.file_uploader("Upload PDF", type=["pdf"])
-    web_url = st.sidebar.text_input("Or enter URL")
-
     # Prepare embedding instance (so we can infer dims early)
     embedding = LocalEmbedder(model_name=st.session_state.embed_model)
 
@@ -325,29 +430,18 @@ if st.session_state.openrouter_api_key:
         if file_name not in st.session_state.processed_documents:
             with st.spinner("Processing PDF..."):
                 texts = process_pdf(uploaded_file)
-                if texts and qdrant_client:
-                    if st.session_state.vector_store:
-                        st.session_state.vector_store.add_documents(texts)
-                    else:
-                        st.session_state.vector_store = create_vector_store(
-                            qdrant_client, texts, embedding
-                        )
-                    st.session_state.processed_documents.append(file_name)
-                    st.success(f"✅ Added PDF: {file_name}")
+                # Use upsert_docs which handles Qdrant vs FAISS
+                upsert_docs(texts, embedding, qdrant_client)
+                st.session_state.processed_documents.append(file_name)
+                st.success(f"✅ Added PDF: {file_name}")
 
     if web_url:
         if web_url not in st.session_state.processed_documents:
             with st.spinner("Processing URL..."):
                 texts = process_web(web_url)
-                if texts and qdrant_client:
-                    if st.session_state.vector_store:
-                        st.session_state.vector_store.add_documents(texts)
-                    else:
-                        st.session_state.vector_store = create_vector_store(
-                            qdrant_client, texts, embedding
-                        )
-                    st.session_state.processed_documents.append(web_url)
-                    st.success(f"✅ Added URL: {web_url}")
+                upsert_docs(texts, embedding, qdrant_client)
+                st.session_state.processed_documents.append(web_url)
+                st.success(f"✅ Added URL: {web_url}")
 
     # Display sources in sidebar
     if st.session_state.processed_documents:
@@ -362,12 +456,11 @@ if st.session_state.openrouter_api_key:
     chat_col, toggle_col = st.columns([0.9, 0.1])
 
     with chat_col:
-        prompt = st.chat_input("Ask about your documents...")
+        prompt = st.chat_input("Ask about your documents...", key="chat_input")
 
     with toggle_col:
-        st.session_state.force_web_search = st.toggle(
-            "🌐", help="Force web search"
-        )
+        # using a checkbox toggle for clarity and unique key
+        st.session_state.force_web_search = st.checkbox("🌐", key="force_web_search_checkbox", help="Force web search")
 
     if prompt:
         st.session_state.history.append({"role": "user", "content": prompt})
@@ -393,21 +486,24 @@ if st.session_state.openrouter_api_key:
             rewritten_query if isinstance(rewritten_query, str) and rewritten_query else prompt
         )
         if not st.session_state.force_web_search and st.session_state.vector_store:
-            retriever = st.session_state.vector_store.as_retriever(
-                search_type="similarity_score_threshold",
-                search_kwargs={
-                    "k": 5,
-                    "score_threshold": st.session_state.similarity_threshold,
-                },
-            )
-            docs = retriever.invoke(safe_query)
-            if docs:
-                context = "\n\n".join([d.page_content for d in docs])
-                st.info(
-                    f"📊 Found {len(docs)} relevant documents (similarity > {st.session_state.similarity_threshold})"
+            # use similarity search; adjust params for compatibility
+            try:
+                retriever = st.session_state.vector_store.as_retriever(
+                    search_type="similarity",
+                    search_kwargs={"k": 5},
                 )
-            elif st.session_state.use_web_search:
-                st.info("🔄 No relevant documents found in database, falling back to web search...")
+                docs = retriever.invoke(safe_query)
+                if docs:
+                    context = "\n\n".join([d.page_content for d in docs])
+                    st.info(
+                        f"📊 Found {len(docs)} relevant documents (similarity threshold {st.session_state.similarity_threshold})"
+                    )
+                elif st.session_state.use_web_search:
+                    st.info("🔄 No relevant documents found in database, falling back to web search...")
+            except Exception as e:
+                st.warning(f"⚠️ Retriever error: {e}")
+                if st.session_state.use_web_search:
+                    st.info("🔄 Falling back to web search due to retrieval error.")
 
         # Step 3: Web search if needed
         if (
@@ -471,4 +567,3 @@ Provide a comprehensive answer based on the available information."""
 
 else:
     st.warning("⚠️ Please enter your OpenRouter API Key to continue")
-
